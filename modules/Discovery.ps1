@@ -2860,12 +2860,12 @@ function New-DeployView {
                     if ($pushResult.Success) {
                         $successCount++
                         $lastSuccessProfile = $profileObj.Name
-                        $txtDeployLog.AppendText("[$(Get-Date -Format 'HH:mm:ss')]   $serverIP: Deployment SUCCEEDED`r`n")
+                        $txtDeployLog.AppendText("[$(Get-Date -Format 'HH:mm:ss')]   ${serverIP}: Deployment SUCCEEDED`r`n")
                     } else {
-                        $txtDeployLog.AppendText("[$(Get-Date -Format 'HH:mm:ss')]   $serverIP: Deployment FAILED - $($pushResult.ErrorMessage)`r`n")
+                        $txtDeployLog.AppendText("[$(Get-Date -Format 'HH:mm:ss')]   ${serverIP}: Deployment FAILED - $($pushResult.ErrorMessage)`r`n")
                     }
                 } catch {
-                    $txtDeployLog.AppendText("[$(Get-Date -Format 'HH:mm:ss')]   $serverIP: EXCEPTION - $_`r`n")
+                    $txtDeployLog.AppendText("[$(Get-Date -Format 'HH:mm:ss')]   ${serverIP}: EXCEPTION - $_`r`n")
                 }
 
                 $txtDeployLog.Refresh()

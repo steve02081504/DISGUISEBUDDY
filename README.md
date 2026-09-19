@@ -42,10 +42,25 @@ npm run electron:dev   # Full Electron app
 
 ## Build
 
+### React / Electron installer
+
 ```bash
-# Electron installer
 cd disguise-buddy-ui
 npm run electron:build
 ```
 
 Output: `disguise-buddy-ui/dist-installer/`
+
+### Standalone PowerShell executable
+
+```powershell
+# Requires PowerShell 5.1+; installs ps12exe automatically if missing
+.\Build-Executable.ps1
+```
+
+`ps12exe` compiles `DisguiseBuddy.ps1` — inlining the `modules\` it dot-sources — into `dist\`:
+
+- `DisguiseBuddy.exe` — GUI launcher (requests UAC elevation)
+- `DisguiseBuddy-console.exe` — the same app with a visible console, for troubleshooting
+
+Distribute the whole `dist\` folder: the executable reads and writes `profiles\` next to it at runtime.

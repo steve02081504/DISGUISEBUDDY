@@ -4,7 +4,14 @@
 function Get-AppRootPath {
     if ($script:AppRootPath) { return $script:AppRootPath }
     $script:AppRootPath = if ($PSScriptRoot) {
-        $PSScriptRoot | Split-Path -Parent
+        # Running from source: this file lives in modules/, so the app root is
+        # its parent. Compiled with ps12exe: modules are inlined into the entry
+        # script, so $PSScriptRoot is the .exe directory, which IS the app root.
+        if ((Split-Path -Path $PSScriptRoot -Leaf) -ieq 'modules') {
+            Split-Path -Path $PSScriptRoot -Parent
+        } else {
+            $PSScriptRoot
+        }
     } else {
         $PWD.Path
     }

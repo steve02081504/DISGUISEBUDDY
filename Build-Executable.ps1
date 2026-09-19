@@ -1,9 +1,11 @@
 # Build-Executable.ps1
 # DISGUISE BUDDY - Executable Build Script
 #
-# Run this on Windows with PowerShell 5.1+ in an Administrator session.
-# It merges all .ps1 modules into a single compiled script, then packages
-# it with ps12exe into a standalone .exe with UAC elevation and metadata.
+# Run this on Windows with PowerShell 5.1+.
+# ps12exe compiles DisguiseBuddy.ps1 straight into a standalone .exe. The
+# dot-sourced modules under modules/ are inlined automatically at build time
+# (ps12exe rewrites the "$PSScriptRoot/modules/*.ps1" includes), so there is no
+# merge step and no path patching to keep in sync.
 #
 # Usage:
 #   .\Build-Executable.ps1
@@ -12,11 +14,11 @@
 #
 # Output:
 #   dist\
-#     DisguiseBuddy.exe        <- double-click launcher
-#     profiles\                <- shipped alongside exe (read/write at runtime)
+#     DisguiseBuddy.exe          <- double-click launcher (UAC elevation, GUI)
+#     DisguiseBuddy-console.exe  <- same app with a visible console, for troubleshooting
+#     profiles\                  <- shipped alongside exe (read/write at runtime)
 #       Actor-01.json
-#       ... (all 13 profiles)
-#     DisguiseBuddy.bat        <- fallback launcher (no exe required)
+#       ... (all profiles)
 #
 # Prerequisites (installed automatically if missing):
 #   ps12exe  (Install-Module ps12exe -Scope CurrentUser)
@@ -45,20 +47,9 @@ $AppDescription = 'DISGUISE BUDDY - Server Configuration Manager'
 $AppCompany     = 'disguise'
 $AppCopyright   = "Copyright $((Get-Date).Year) disguise"
 $IconPath       = Join-Path $PSScriptRoot 'icon.ico'   # optional - skipped if absent
-$MergedScript   = Join-Path $env:TEMP 'DisguiseBuddy_merged.ps1'
+$EntryScript    = Join-Path $PSScriptRoot 'DisguiseBuddy.ps1'
 $ExeOutput      = Join-Path $OutputDir "$AppName.exe"
-
-# Module load order matches DisguiseBuddy.ps1 dot-source order exactly.
-$ModuleLoadOrder = @(
-    'Theme.ps1'
-    'UIComponents.ps1'
-    'ProfileManager.ps1'
-    'NetworkConfig.ps1'
-    'SMBConfig.ps1'
-    'ServerIdentity.ps1'
-    'Discovery.ps1'
-    'Dashboard.ps1'
-)
+$ConsoleExe     = Join-Path $OutputDir "$AppName-console.exe"
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -110,19 +101,33 @@ Import-Module ps12exe -ErrorAction Stop
 
 Write-Step 'Validating source files'
 
-$modulesDir  = Join-Path $PSScriptRoot 'modules'
-$profilesDir = Join-Path $PSScriptRoot 'profiles'
-
-foreach ($mod in $ModuleLoadOrder) {
-    $path = Join-Path $modulesDir $mod
-    if (-not (Test-Path $path)) {
-        Write-Fail "Missing module: $path"
-        exit 1
-    }
+if (-not (Test-Path -Path $EntryScript -PathType Leaf)) {
+    Write-Fail "Missing entry script: $EntryScript"
+    exit 1
 }
-Write-OK "All $($ModuleLoadOrder.Count) modules present"
 
-$profiles = Get-ChildItem $profilesDir -Filter '*.json' -ErrorAction SilentlyContinue
+# ps12exe inlines every "$PSScriptRoot/modules/*.ps1" dot-source it finds in the
+# entry script. Parse those references and fail early if a module is missing.
+$entryText = Get-Content -Path $EntryScript -Raw -Encoding UTF8
+$moduleRefs = @(
+    [regex]::Matches($entryText, '\$PSScriptRoot[/\\]modules[/\\](?<name>[\w.-]+\.ps1)') |
+        ForEach-Object { $_.Groups['name'].Value } | Select-Object -Unique
+)
+
+if ($moduleRefs.Count -eq 0) {
+    Write-Fail "No `$PSScriptRoot/modules/*.ps1 dot-sources found in $EntryScript - ps12exe has nothing to inline."
+    exit 1
+}
+
+$missing = @($moduleRefs | Where-Object { -not (Test-Path (Join-Path $PSScriptRoot "modules/$_") -PathType Leaf) })
+if ($missing.Count -gt 0) {
+    Write-Fail "Missing module(s): $($missing -join ', ')"
+    exit 1
+}
+Write-OK "All $($moduleRefs.Count) module(s) present"
+
+$profilesDir = Join-Path $PSScriptRoot 'profiles'
+$profiles = @(Get-ChildItem $profilesDir -Filter '*.json' -ErrorAction SilentlyContinue)
 if ($profiles.Count -eq 0) {
     Write-Fail "No .json profiles found in $profilesDir"
     exit 1
@@ -130,97 +135,7 @@ if ($profiles.Count -eq 0) {
 Write-OK "$($profiles.Count) profile(s) found"
 
 # ============================================================================
-# STEP 3 - Merge modules into a single .ps1
-#
-# ps12exe inlines the compiled script into the exe resource table. It cannot
-# follow dot-source paths at compile time — the compiled exe has no filesystem
-# layout to reference. The solution is to concatenate every module into one
-# flat script before passing it to ps12exe.
-#
-# Path resolution fix:
-#   $PSScriptRoot inside a compiled ps12exe refers to the directory containing
-#   the .exe, which is exactly where we place the profiles/ folder. So the
-#   normal Get-AppRootPath logic works as-is for Theme.ps1, Write-AppLog, etc.
-#
-#   ProfileManager.ps1 uses "$PSScriptRoot\.." which would be WRONG inside a
-#   merged script (PSScriptRoot = modules/ in the source, but in a merged file
-#   there is no modules/ — PSScriptRoot will be the exe's directory). We patch
-#   that one call to use Get-AppRootPath instead.
-#
-# ============================================================================
-
-Write-Step 'Merging modules into single script'
-
-$sb = [System.Text.StringBuilder]::new()
-
-# Header
-[void]$sb.AppendLine('# DisguiseBuddy - Merged Build Script')
-[void]$sb.AppendLine('# Generated by Build-Executable.ps1 on ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
-[void]$sb.AppendLine('#Requires -Version 5.1')
-[void]$sb.AppendLine('')
-
-# ---- Inject $PSScriptRoot normalisation block ----
-# When running as a compiled exe, ps12exe sets $PSScriptRoot to the exe's
-# directory. We expose this as $script:AppRootPath so Get-AppRootPath (defined
-# in Theme.ps1) returns the right value from the first call.
-[void]$sb.AppendLine('# ---- Runtime path bootstrap (injected by build script) ----')
-[void]$sb.AppendLine('if ($MyInvocation.MyCommand.CommandType -eq [System.Management.Automation.CommandTypes]::ExternalScript) {')
-[void]$sb.AppendLine('    $script:AppRootPath = Split-Path -Parent $MyInvocation.MyCommand.Path')
-[void]$sb.AppendLine('} elseif ($PSScriptRoot) {')
-[void]$sb.AppendLine('    $script:AppRootPath = $PSScriptRoot')
-[void]$sb.AppendLine('} else {')
-[void]$sb.AppendLine('    $script:AppRootPath = (Get-Location).Path')
-[void]$sb.AppendLine('}')
-[void]$sb.AppendLine('')
-
-# ---- Inline each module ----
-foreach ($modFile in $ModuleLoadOrder) {
-    $modPath    = Join-Path $modulesDir $modFile
-    $modContent = Get-Content -Path $modPath -Raw -Encoding UTF8
-
-    [void]$sb.AppendLine("# ============================================================")
-    [void]$sb.AppendLine("# MODULE: $modFile")
-    [void]$sb.AppendLine("# ============================================================")
-
-    # Patch ProfileManager: replace the bad PSScriptRoot path with Get-AppRootPath
-    # Original:  $profilesDir = Join-Path -Path "$PSScriptRoot\.." -ChildPath 'profiles'
-    # Patched:   $profilesDir = Join-Path -Path (Get-AppRootPath) -ChildPath 'profiles'
-    if ($modFile -eq 'ProfileManager.ps1') {
-        $before = $modContent
-        $modContent = $modContent -replace [regex]::Escape('Join-Path -Path "$PSScriptRoot\.." -ChildPath ''profiles'''),
-                                           'Join-Path -Path (Get-AppRootPath) -ChildPath ''profiles'''
-        if ($modContent -eq $before) {
-            Write-Host "     WARNING: ProfileManager PSScriptRoot patch did not match. Verify Get-ProfilesDirectory manually." -ForegroundColor Yellow
-        } else {
-            Write-OK 'ProfileManager.ps1 path patched'
-        }
-    }
-
-    [void]$sb.AppendLine($modContent)
-    [void]$sb.AppendLine('')
-}
-
-# ---- Inline main entry point (everything after the dot-source block) ----
-$mainContent = Get-Content -Path (Join-Path $PSScriptRoot 'DisguiseBuddy.ps1') -Raw -Encoding UTF8
-
-# Strip the dot-source lines — modules are now inline above.
-# Also strip the $modulesPath declaration since it is no longer needed.
-$mainContent = $mainContent -replace '(?m)^\$modulesPath\s*=.*$\n?', ''
-$mainContent = $mainContent -replace '(?m)^\.\s+\(Join-Path\s+\$modulesPath\s+''[^'']+\.ps1''\)\s*$\n?', ''
-
-[void]$sb.AppendLine("# ============================================================")
-[void]$sb.AppendLine("# ENTRY POINT: DisguiseBuddy.ps1")
-[void]$sb.AppendLine("# ============================================================")
-[void]$sb.AppendLine($mainContent)
-
-# Write merged script to temp
-$mergedContent = $sb.ToString()
-[System.IO.File]::WriteAllText($MergedScript, $mergedContent, [System.Text.Encoding]::UTF8)
-
-Write-OK "Merged script written to $MergedScript ($([math]::Round((Get-Item $MergedScript).Length / 1KB))KB)"
-
-# ============================================================================
-# STEP 4 - Prepare output directory
+# STEP 3 - Prepare output directory
 # ============================================================================
 
 Write-Step 'Preparing output directory'
@@ -243,93 +158,91 @@ $destProfiles = Join-Path $OutputDir 'profiles'
 Copy-Item -Path $profilesDir -Destination $destProfiles -Recurse -Force
 Write-OK "Copied profiles/ ($($profiles.Count) files)"
 
-# Copy icon if present
+# Copy icon if present (also used as the compiled exe icon below)
 if (Test-Path $IconPath) {
     Copy-Item -Path $IconPath -Destination (Join-Path $OutputDir 'icon.ico') -Force
     Write-OK 'Copied icon.ico'
 }
 
 # ============================================================================
-# STEP 5 - Compile with ps12exe
+# STEP 4 - Compile with ps12exe
+#
+# ps12exe resolves the script's "$PSScriptRoot/modules/*.ps1" dot-sources,
+# inlines them, and embeds the merged script as a resource in the .exe.
+# At runtime $PSScriptRoot points at the .exe directory, where we ship
+# profiles/ (Get-AppRootPath in Theme.ps1 accounts for both layouts).
+#
+# Two executables are produced from the same source:
+#   - DisguiseBuddy.exe:         windowed GUI (normal use)
+#   - DisguiseBuddy-console.exe: visible console (troubleshooting; replaces the
+#     old hand-written .bat fallback launcher)
 # ============================================================================
 
 Write-Step 'Compiling with ps12exe'
 
-$compileParams = @{
-    inputFile       = $MergedScript
-    outputFile      = $ExeOutput
-    requireAdmin    = $true        # Embeds UAC manifest: requestedExecutionLevel = requireAdministrator
-    noConsole       = $true        # Hides the console window (GUI app)
-    title           = $AppName
-    description     = $AppDescription
-    version         = $AppVersion
-    company         = $AppCompany
-    copyright       = $AppCopyright
-    product         = $AppName
-    # x64 is correct for disguise servers; change to x86 only if targeting 32-bit systems
-    x64             = $true
-    # DPI-aware manifest entry so the form renders crisp on high-DPI displays
-    DPIAware        = $true
+function Invoke-Ps12ExeBuild {
+    param(
+        [hashtable]$Overrides,
+        [string]$Label
+    )
+
+    $resources = @{
+        Title       = $AppName
+        Description = $AppDescription
+        Version     = $AppVersion
+        Company     = $AppCompany
+        Product     = $AppName
+        Copyright   = $AppCopyright
+    }
+    if (Test-Path $IconPath) {
+        $resources['Icon'] = $IconPath
+    }
+
+    $compileParams = @{
+        inputFile  = $EntryScript
+        Os         = @{
+            Admin = $true        # Embeds UAC manifest: requestedExecutionLevel = requireAdministrator
+        }
+        Build      = @{
+            # x64 is correct for disguise servers; change to x86 only if targeting 32-bit systems
+            Platform = 'x64'
+        }
+        Resources  = $resources
+        # Skip the online version check so builds stay deterministic/offline-friendly
+        NoUpdateCheck = $true
+    }
+
+    foreach ($key in $Overrides.Keys) {
+        $compileParams[$key] = $Overrides[$key]
+    }
+
+    try {
+        ps12exe @compileParams
+        Write-OK "Compiled ($Label): $($compileParams.outputFile)"
+    } catch {
+        Write-Fail "Compilation failed ($Label): $_"
+        exit 1
+    }
 }
 
-if (Test-Path $IconPath) {
-    $compileParams['iconFile'] = $IconPath
+Invoke-Ps12ExeBuild -Label 'GUI' -Overrides @{
+    outputFile = $ExeOutput
+    App        = @{
+        Windowed = $true        # GUI app - hide the console window
+        DpiAware = $true        # DPI-aware so the form renders crisp on high-DPI displays
+    }
 }
 
-try {
-    Invoke-ps2exe @compileParams
-    Write-OK "Compiled: $ExeOutput"
-} catch {
-    Write-Fail "Compilation failed: $_"
-    exit 1
+Invoke-Ps12ExeBuild -Label 'console' -Overrides @{
+    outputFile = $ConsoleExe
+    App        = @{
+        Windowed = $false       # Keep the console attached for diagnostics
+    }
 }
 
 # ============================================================================
-# STEP 6 - Write fallback .bat launcher
-#
-# The .bat is a zero-dependency fallback: no compilation needed, works on any
-# Windows machine with PowerShell 5.1. Also useful for troubleshooting when
-# the exe behaves unexpectedly — run the .bat to see console output.
+# STEP 5 - Summary
 # ============================================================================
-
-Write-Step 'Writing .bat fallback launcher'
-
-$batPath    = Join-Path $OutputDir "$AppName.bat"
-$batContent = @'
-@echo off
-:: DISGUISE BUDDY - Fallback Launcher
-:: Requires PowerShell 5.1+ and Administrator privileges.
-:: Use this if the .exe fails or for troubleshooting (console output is visible).
-
-:: Check if already elevated
-net session >nul 2>&1
-if %errorLevel% == 0 (
-    goto :run
-) else (
-    echo Requesting Administrator privileges...
-    powershell -Command "Start-Process '%~f0' -Verb RunAs"
-    exit /b
-)
-
-:run
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0DisguiseBuddy.ps1"
-'@
-
-[System.IO.File]::WriteAllText($batPath, $batContent, [System.Text.Encoding]::ASCII)
-Write-OK "Written: $batPath"
-
-# Also copy the source .ps1 so the .bat can find it in the same dist/ folder
-Copy-Item -Path (Join-Path $PSScriptRoot 'DisguiseBuddy.ps1') -Destination (Join-Path $OutputDir 'DisguiseBuddy.ps1') -Force
-# Copy modules/ so the .bat-based launcher can dot-source them
-$destModules = Join-Path $OutputDir 'modules'
-Copy-Item -Path $modulesDir -Destination $destModules -Recurse -Force
-Write-OK 'Copied source .ps1 and modules/ for .bat fallback'
-
-# ============================================================================
-# STEP 7 - Cleanup and summary
-# ============================================================================
-
-Remove-Item $MergedScript -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
 Write-Host '  BUILD COMPLETE' -ForegroundColor Green
@@ -344,4 +257,5 @@ Get-ChildItem $OutputDir | ForEach-Object {
 Write-Host ''
 Write-Host '  Distribute the entire dist\ folder — the .exe requires profiles\ alongside it.'
 Write-Host '  Users double-click DisguiseBuddy.exe; Windows UAC will prompt for elevation.'
+Write-Host '  If the GUI misbehaves, run DisguiseBuddy-console.exe to see the output live.'
 Write-Host ''

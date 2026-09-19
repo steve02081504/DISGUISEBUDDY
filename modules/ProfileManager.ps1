@@ -20,7 +20,7 @@ function Get-ProfilesDirectory {
     .OUTPUTS
         [string] - Absolute path to profiles/ directory.
     #>
-    $profilesDir = Join-Path -Path "$PSScriptRoot\.." -ChildPath 'profiles'
+    $profilesDir = Join-Path -Path (Get-AppRootPath) -ChildPath 'profiles'
 
     # Normalize the path to resolve the ".." segment
     $profilesDir = [System.IO.Path]::GetFullPath($profilesDir)

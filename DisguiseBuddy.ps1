@@ -64,21 +64,25 @@ $script:DeployViewActions = $null
 
 # ============================================================================
 # DOT-SOURCE MODULES (order matters: Theme -> UIComponents -> everything else)
+#
+# Each path is written as "$PSScriptRoot/modules/<name>.ps1" on purpose:
+# ps12exe recognises this exact form and inlines the module into the compiled
+# executable at build time, so no manual merge step is needed. Keep the paths
+# in this shape (no $modulesPath indirection) or the build will silently ship
+# a script that tries to dot-source files that are not next to the .exe.
 # ============================================================================
 
-$modulesPath = Join-Path -Path $PSScriptRoot -ChildPath 'modules'
-
 # Foundation modules (must load first)
-. (Join-Path $modulesPath 'Theme.ps1')
-. (Join-Path $modulesPath 'UIComponents.ps1')
+. "$PSScriptRoot/modules/Theme.ps1"
+. "$PSScriptRoot/modules/UIComponents.ps1"
 
 # Feature modules (order doesn't matter)
-. (Join-Path $modulesPath 'ProfileManager.ps1')
-. (Join-Path $modulesPath 'NetworkConfig.ps1')
-. (Join-Path $modulesPath 'SMBConfig.ps1')
-. (Join-Path $modulesPath 'ServerIdentity.ps1')
-. (Join-Path $modulesPath 'Discovery.ps1')
-. (Join-Path $modulesPath 'Dashboard.ps1')
+. "$PSScriptRoot/modules/ProfileManager.ps1"
+. "$PSScriptRoot/modules/NetworkConfig.ps1"
+. "$PSScriptRoot/modules/SMBConfig.ps1"
+. "$PSScriptRoot/modules/ServerIdentity.ps1"
+. "$PSScriptRoot/modules/Discovery.ps1"
+. "$PSScriptRoot/modules/Dashboard.ps1"
 
 Write-AppLog -Message 'DISGUISE BUDDY starting up' -Level 'INFO'
 

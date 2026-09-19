@@ -978,7 +978,7 @@ function New-NetworkView {
 
     # Scan for saved profiles in the profiles directory
     $profileItems = @('Default d3 Config')
-    $profileDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'profiles'
+    $profileDir = Join-Path (Get-AppRootPath) 'profiles'
     if (Test-Path $profileDir) {
         $profileFiles = Get-ChildItem -Path $profileDir -Filter '*.json' -ErrorAction SilentlyContinue
         foreach ($pf in $profileFiles) {
