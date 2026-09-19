@@ -3,15 +3,16 @@
 # Centralized path resolution
 function Get-AppRootPath {
     if ($script:AppRootPath) { return $script:AppRootPath }
-    $script:AppRootPath = if ($PSScriptRoot) {
-        # Running from source: this file lives in modules/, so the app root is
-        # its parent. Compiled with ps12exe: modules are inlined into the entry
-        # script, so $PSScriptRoot is the .exe directory, which IS the app root.
-        if ((Split-Path -Path $PSScriptRoot -Leaf) -ieq 'modules') {
-            Split-Path -Path $PSScriptRoot -Parent
-        } else {
-            $PSScriptRoot
-        }
+    # Tell the two layouts apart by content, not by folder name: when running
+    # from source this file is modules\Theme.ps1, so Theme.ps1 sits next to it
+    # and the app root is its parent. When compiled with ps12exe this file is
+    # inlined into the entry script, so $PSScriptRoot is the .exe directory
+    # itself (and no Theme.ps1 is next to the executable).
+    $isSourceLayout = $PSScriptRoot -and (Test-Path -LiteralPath (Join-Path -Path $PSScriptRoot -ChildPath 'Theme.ps1') -PathType Leaf)
+    $script:AppRootPath = if ($isSourceLayout) {
+        Split-Path -Path $PSScriptRoot -Parent
+    } elseif ($PSScriptRoot) {
+        $PSScriptRoot
     } else {
         $PWD.Path
     }
